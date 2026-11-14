@@ -132,6 +132,17 @@ def fetch_rss(source: dict, limit: int):
             continue
         summary = re.sub(r"<[^>]+>", " ", getattr(e, "summary", "") or "")
         summary = re.sub(r"\s+", " ", summary).strip()[:500]
+        # Nội dung đầy đủ khi feed có content:encoded (nhiều feed WordPress có);
+        # không có thì dùng tóm tắt. Trang chi tiết (article.php) sẽ tự tải
+        # nốt toàn văn từ link gốc nếu vẫn trống.
+        content = ""
+        try:
+            raw_content = (getattr(e, "content", None) or [{}])[0].get("value", "") or ""
+        except Exception:  # noqa: BLE001
+            raw_content = ""
+        if raw_content:
+            content = re.sub(r"<[^>]+>", " ", raw_content)
+            content = re.sub(r"\s+", " ", content).strip()[:8000]
         pub = None
         for key in ("published_parsed", "updated_parsed"):
             if getattr(e, key, None):
@@ -141,7 +152,8 @@ def fetch_rss(source: dict, limit: int):
         is_vip = 1 if (source["name"] in VIP_SOURCES and VIP_KEYWORDS.search(title)) else 0
         items.append({
             "source": source["name"], "lang": source["lang"], "title": title,
-            "title_vi": title, "summary_vi": summary, "url": url,
+            "title_vi": title, "summary_vi": summary, "content": content,
+            "url": url,
             "published_at": pub, "score": 0, "category": cat,
             "is_vip": is_vip, "vip_xu_cost": 10 if is_vip else 0,
             "hash": item_hash(title, url),
