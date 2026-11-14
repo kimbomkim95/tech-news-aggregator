@@ -253,28 +253,38 @@ def translate_batch(items: list) -> None:
 
 
 def fetch_prices():
-    """Snapshot giá cổ phiếu hằng ngày qua Stooq CSV (miễn phí, không key).
-    Chỉ chạy khi có cờ --prices. Lỗi 1 mã không làm hỏng các mã khác."""
+    """Giá cổ phiếu hằng ngày qua Yahoo Finance chart API (miễn phí, không key).
+    Stooq đã tắt endpoint CSV (404 trên mọi tham số, kiểm tra 14/11/2026)
+    nên chuyển sang Yahoo. Chỉ chạy khi có cờ --prices.
+    Lỗi 1 mã không làm hỏng các mã khác."""
     out, today = [], datetime.now(timezone.utc).date().isoformat()
-    symbols = ",".join(s.lower() for s, _, _ in PRICE_TICKERS)
-    try:
-        r = fetch_with_retry(f"https://stooq.com/q/l/?s={symbols}&f=sd2t2ohlcv&h&e=csv")
-        rows = [ln.split(",") for ln in r.text.strip().splitlines()[1:] if ln.strip()]
-        by_sym = {row[0].strip().lower(): row for row in rows if len(row) >= 7}
-        for sku, name, cat in PRICE_TICKERS:
-            row = by_sym.get(sku.lower())
-            if not row:
-                continue
+    for sku, name, cat in PRICE_TICKERS:
+        price, currency = None, "USD"
+        for host in ("query1", "query2"):  # dự phòng nếu 1 host bị chặn
             try:
-                price = float(row[6])
-            except (ValueError, IndexError):
-                continue
-            if price > 0:
+                r = fetch_with_retry(
+                    f"https://{host}.finance.yahoo.com/v8/finance/chart/{sku}"
+                    "?range=1d&interval=1d")
+                result = r.json().get("chart", {}).get("result", [{}])[0]
+                meta = result.get("meta", {})
+                price = meta.get("regularMarketPrice")
+                currency = meta.get("currency", "USD") or "USD"
+                if not price:
+                    closes = (result.get("indicators", {}).get("quote", [{}])[0]
+                              .get("close") or [])
+                    closes = [c for c in closes if c]
+                    price = closes[-1] if closes else None
+                if price:
+                    break
+            except Exception as ex:  # noqa: BLE001
+                print(f"[WARN] Lấy giá {sku} ({host}) lỗi: {ex}", flush=True)
+        try:
+            if price and float(price) > 0:
                 out.append({"sku": sku, "name": name, "category": cat,
-                            "source": "stooq", "price": price,
-                            "currency": "USD", "price_date": today})
-    except Exception as ex:  # noqa: BLE001
-        print(f"[WARN] Lấy giá lỗi: {ex}", flush=True)
+                            "source": "yahoo", "price": float(price),
+                            "currency": currency, "price_date": today})
+        except (TypeError, ValueError):
+            continue
     return out
 
 
@@ -315,43 +325,53 @@ def post_ingest(payload: dict) -> dict:
         print(json.dumps({"items": len(payload.get("items", [])),
                           "prices": len(payload.get("prices", []))}, ensure_ascii=False))
         return {"ok": False, "reason": "no_ingest_config"}
-    session = requests.Session()
-    session.headers.update(HEADERS)
     host = urlparse(INGEST_URL).netloc
+    for attempt in range(2):  # thử lại 1 lần nếu proxy trả 400/5xx nhất thời
+        session = requests.Session()
+        session.headers.update(HEADERS)
 
-    def _do_post():
-        # Gửi token cả 2 cách: một số host Apache không chuyển tiếp header
-        # Authorization xuống PHP, còn header X- thì qua được.
-        return session.post(INGEST_URL, json=payload, timeout=30,
-                            headers={"Authorization": f"Bearer {INGEST_TOKEN}",
-                                     "X-Ingest-Token": INGEST_TOKEN,
-                                     "Content-Type": "application/json"})
+        def _do_post():
+            # Gửi token cả 2 cách: một số host Apache không chuyển tiếp header
+            # Authorization xuống PHP, còn header X- thì qua được.
+            return session.post(INGEST_URL, json=payload, timeout=30,
+                                headers={"Authorization": f"Bearer {INGEST_TOKEN}",
+                                         "X-Ingest-Token": INGEST_TOKEN,
+                                         "Content-Type": "application/json"})
 
-    r = _do_post()
-    print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
-    # Host chặn bằng trang challenge AES (?i=1) -> giải cookie __test rồi POST lại.
-    # Thực nghiệm: CBC mới qua được cổng kiểm tra (CFB tính ra cookie sai).
-    for mode in ("CBC", "CFB"):
-        if not _is_challenge(r):
-            break
-        cookie = _solve_test_cookie(r.text, mode)
-        if not cookie:
-            break
-        session.cookies.set("__test", cookie, domain=host, path="/")
-        print(f"[INFO] Đã giải challenge AES ({mode}), thử POST lại với cookie __test.", flush=True)
         r = _do_post()
         print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
-    if r.status_code >= 400:
-        print(f"[ERROR] Ingest HTTP {r.status_code} "
-              f"Body[:500]={r.text[:500]!r}", flush=True)
-        r.raise_for_status()
-    try:
-        return r.json()
-    except Exception:
-        print(f"[ERROR] Ingest trả về không phải JSON. Status={r.status_code} "
-              f"Content-Type={r.headers.get('Content-Type')} "
-              f"Body[:500]={r.text[:500]!r}", flush=True)
-        raise
+        # Host chặn bằng trang challenge AES (?i=1) -> giải cookie __test rồi POST lại.
+        # Thực nghiệm: CBC mới qua được cổng kiểm tra (CFB tính ra cookie sai).
+        for mode in ("CBC", "CFB"):
+            if not _is_challenge(r):
+                break
+            cookie = _solve_test_cookie(r.text, mode)
+            if not cookie:
+                break
+            session.cookies.set("__test", cookie, domain=host, path="/")
+            print(f"[INFO] Đã giải challenge AES ({mode}), thử POST lại với cookie __test.", flush=True)
+            r = _do_post()
+            print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
+        if r.status_code >= 400:
+            print(f"[ERROR] Ingest HTTP {r.status_code} "
+                  f"Body[:500]={r.text[:500]!r}", flush=True)
+            if attempt == 0:
+                print("[INFO] Thử ingest lại sau 10 giây.", flush=True)
+                time.sleep(10)
+                continue
+            r.raise_for_status()
+        try:
+            return r.json()
+        except Exception:
+            print(f"[ERROR] Ingest trả về không phải JSON. Status={r.status_code} "
+                  f"Content-Type={r.headers.get('Content-Type')} "
+                  f"Body[:500]={r.text[:500]!r}", flush=True)
+            if attempt == 0:
+                print("[INFO] Thử ingest lại sau 10 giây.", flush=True)
+                time.sleep(10)
+                continue
+            raise
+    raise RuntimeError("POST ingest thất bại sau 2 lần thử")
 
 
 def main() -> int:
