@@ -26,6 +26,11 @@ from urllib.parse import urlparse
 import feedparser
 import requests
 
+try:
+    from Crypto.Cipher import AES  # pycryptodome — để giải challenge AES của host
+except Exception:  # noqa: BLE001
+    AES = None
+
 TIMEOUT = 10          # giây / feed, retry 1 lần
 MAX_PER_FEED = 20
 INGEST_URL = os.environ.get("INGEST_URL", "")
@@ -97,10 +102,11 @@ def classify(title: str, summary: str, default: str) -> str:
 
 
 def fetch_with_retry(url: str, **kw):
+    headers = kw.pop("headers", HEADERS)
     last = None
     for _ in range(2):  # 1 lần thử + 1 retry
         try:
-            r = requests.get(url, timeout=TIMEOUT, headers=HEADERS, **kw)
+            r = requests.get(url, timeout=TIMEOUT, headers=headers, **kw)
             r.raise_for_status()
             return r
         except Exception as ex:  # noqa: BLE001 — ghi log và retry
@@ -272,16 +278,65 @@ def fetch_prices():
     return out
 
 
+def _solve_test_cookie(html: str, mode: str):
+    """Giải challenge AES của iFastNet (?i=1): trang challenge chạy
+    slowAES.decrypt(c, 2, a, b) rồi đặt cookie __test = toHex(kết quả).
+    mode 2 của slowAES là CFB; CBC là phương án dự phòng.
+    Trả về giá trị cookie __test (hex) hoặc None."""
+    if AES is None:
+        print("[WARN] Chưa có pycryptodome — không giải được challenge AES.", flush=True)
+        return None
+    m = re.search(
+        r'var a=toNumbers\("([0-9a-fA-F]+)"\),b=toNumbers\("([0-9a-fA-F]+)"\),'
+        r'c=toNumbers\("([0-9a-fA-F]+)"\)', html)
+    if not m:
+        return None
+    key = bytes.fromhex(m.group(1))
+    iv = bytes.fromhex(m.group(2))
+    ct = bytes.fromhex(m.group(3))
+    try:
+        if mode == "CBC":
+            pt = AES.new(key, AES.MODE_CBC, iv=iv).decrypt(ct)
+        else:
+            pt = AES.new(key, AES.MODE_CFB, iv=iv, segment_size=128).decrypt(ct)
+        return pt.hex()
+    except Exception as ex:  # noqa: BLE001
+        print(f"[WARN] Giải challenge AES ({mode}) lỗi: {ex}", flush=True)
+        return None
+
+
+def _is_challenge(resp) -> bool:
+    return "aes.js" in resp.text and "toNumbers" in resp.text
+
+
 def post_ingest(payload: dict) -> dict:
     if not INGEST_URL or not INGEST_TOKEN:
         print("[INFO] Chưa có INGEST_URL/INGEST_TOKEN — in payload ra stdout thay vì POST.", flush=True)
         print(json.dumps({"items": len(payload.get("items", [])),
                           "prices": len(payload.get("prices", []))}, ensure_ascii=False))
         return {"ok": False, "reason": "no_ingest_config"}
-    r = requests.post(INGEST_URL, json=payload, timeout=30,
-                      headers={**HEADERS, "Authorization": f"Bearer {INGEST_TOKEN}",
-                               "Content-Type": "application/json"})
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    host = urlparse(INGEST_URL).netloc
+
+    def _do_post():
+        return session.post(INGEST_URL, json=payload, timeout=30,
+                            headers={"Authorization": f"Bearer {INGEST_TOKEN}",
+                                     "Content-Type": "application/json"})
+
+    r = _do_post()
     print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
+    # Host chặn bằng trang challenge AES (?i=1) -> giải cookie __test rồi POST lại.
+    for mode in ("CFB", "CBC"):
+        if not _is_challenge(r):
+            break
+        cookie = _solve_test_cookie(r.text, mode)
+        if not cookie:
+            break
+        session.cookies.set("__test", cookie, domain=host, path="/")
+        print(f"[INFO] Đã giải challenge AES ({mode}), thử POST lại với cookie __test.", flush=True)
+        r = _do_post()
+        print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
     if r.status_code >= 400:
         print(f"[ERROR] Ingest HTTP {r.status_code} "
               f"Body[:500]={r.text[:500]!r}", flush=True)
