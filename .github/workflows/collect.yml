@@ -1,11 +1,13 @@
-# InfinityFree / GitHub Actions — chạy collector mỗi 15 phút.
-# InfinityFree KHÔNG có cron (tắt từ 09/08/2023) nên scheduler phải chạy ở đây.
+# TinkerHost / GitHub Actions — chạy collector mỗi 15 phút.
+# Host KHÔNG có cron nên scheduler phải chạy ở đây.
+# Tin + giá chạy CHUNG trong 1 process / 1 lần POST: host chỉ cho qua
+# 1 lần giải challenge AES (?i=1) mỗi lượt — lần POST thứ 2 trong cùng
+# 1 run luôn bị front proxy trả 400 (thực nghiệm run #4, #6).
 name: collect-tech-news
 
 on:
   schedule:
-    - cron: "*/15 * * * *" # mỗi 15 phút (tin)
-    - cron: "0 1 * * *"    # 01:00 UTC mỗi ngày (giá — xem step prices)
+    - cron: "*/15 * * * *" # mỗi 15 phút (tin + giá)
   workflow_dispatch: # chạy tay để kiểm tra
 
 jobs:
@@ -22,18 +24,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r collector/requirements.txt
 
-      - name: Collect RSS + APIs (tin)
+      - name: Collect RSS + APIs (tin + giá)
         env:
           INGEST_URL: ${{ secrets.INGEST_URL }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRODUCTHUNT_TOKEN: ${{ secrets.PRODUCTHUNT_TOKEN }}
-        run: python3 collector/collector.py --limit 20
-
-      - name: Collect prices (chỉ 1 lần/ngày, lúc 01:00 UTC)
-        if: github.event.schedule == '0 1 * * *' || github.event_name == 'workflow_dispatch'
-        env:
-          INGEST_URL: ${{ secrets.INGEST_URL }}
-          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
-        run: python3 collector/collector.py --limit 5 --prices
+        run: python3 collector/collector.py --limit 20 --prices
