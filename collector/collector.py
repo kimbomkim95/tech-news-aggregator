@@ -55,6 +55,8 @@ RSS_SOURCES = [
     {"name": "OpenAI News", "lang": "en", "feed": "https://openai.com/news/rss.xml", "category": "ai"},
     {"name": "DeepMind Blog", "lang": "en", "feed": "https://deepmind.google/blog/rss.xml", "category": "ai"},
     {"name": "Hugging Face Blog", "lang": "en", "feed": "https://huggingface.co/blog/feed.xml", "category": "ai"},
+    {"name": "TechPowerUp Reviews", "lang": "en", "feed": "https://www.techpowerup.com/rss/reviews", "category": "hardware"},
+    {"name": "Tom's Hardware", "lang": "en", "feed": "https://www.tomshardware.com/feeds/all", "category": "hardware"},
 ]
 
 # Nguồn "pro" được phép đánh VIP theo quy tắc ở trên
@@ -331,13 +333,15 @@ def _is_challenge(resp) -> bool:
     return "aes.js" in resp.text and "toNumbers" in resp.text
 
 
-def post_ingest(payload: dict) -> dict:
-    if not INGEST_URL or not INGEST_TOKEN:
+def post_ingest(payload: dict, url: str | None = None) -> dict:
+    target = url or INGEST_URL
+    if not target or not INGEST_TOKEN:
         print("[INFO] Chưa có INGEST_URL/INGEST_TOKEN — in payload ra stdout thay vì POST.", flush=True)
         print(json.dumps({"items": len(payload.get("items", [])),
-                          "prices": len(payload.get("prices", []))}, ensure_ascii=False))
+                          "prices": len(payload.get("prices", [])),
+                          "retail_prices": len(payload.get("retail_prices", []))}, ensure_ascii=False))
         return {"ok": False, "reason": "no_ingest_config"}
-    host = urlparse(INGEST_URL).netloc
+    host = urlparse(target).netloc
     for attempt in range(2):  # thử lại 1 lần nếu proxy trả 400/5xx nhất thời
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -345,7 +349,7 @@ def post_ingest(payload: dict) -> dict:
         def _do_post():
             # Gửi token cả 2 cách: một số host Apache không chuyển tiếp header
             # Authorization xuống PHP, còn header X- thì qua được.
-            return session.post(INGEST_URL, json=payload, timeout=30,
+            return session.post(target, json=payload, timeout=30,
                                 headers={"Authorization": f"Bearer {INGEST_TOKEN}",
                                          "X-Ingest-Token": INGEST_TOKEN,
                                          "Content-Type": "application/json"})
