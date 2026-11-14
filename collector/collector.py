@@ -320,14 +320,18 @@ def post_ingest(payload: dict) -> dict:
     host = urlparse(INGEST_URL).netloc
 
     def _do_post():
+        # Gửi token cả 2 cách: một số host Apache không chuyển tiếp header
+        # Authorization xuống PHP, còn header X- thì qua được.
         return session.post(INGEST_URL, json=payload, timeout=30,
                             headers={"Authorization": f"Bearer {INGEST_TOKEN}",
+                                     "X-Ingest-Token": INGEST_TOKEN,
                                      "Content-Type": "application/json"})
 
     r = _do_post()
     print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
     # Host chặn bằng trang challenge AES (?i=1) -> giải cookie __test rồi POST lại.
-    for mode in ("CFB", "CBC"):
+    # Thực nghiệm: CBC mới qua được cổng kiểm tra (CFB tính ra cookie sai).
+    for mode in ("CBC", "CFB"):
         if not _is_challenge(r):
             break
         cookie = _solve_test_cookie(r.text, mode)
