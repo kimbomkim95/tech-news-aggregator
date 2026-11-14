@@ -1,0 +1,19 @@
+name: retail-daily
+on:
+  schedule:
+    # 02:00 giờ VN = 19:00 UTC hôm trước
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+jobs:
+  retail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r collector/requirements.txt
+      - run: python3 collector/retail_prices.py
+        env:
+          RETAIL_INGEST_URL: ${{ secrets.RETAIL_INGEST_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
