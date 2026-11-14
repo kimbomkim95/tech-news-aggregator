@@ -281,8 +281,18 @@ def post_ingest(payload: dict) -> dict:
     r = requests.post(INGEST_URL, json=payload, timeout=30,
                       headers={**HEADERS, "Authorization": f"Bearer {INGEST_TOKEN}",
                                "Content-Type": "application/json"})
-    r.raise_for_status()
-    return r.json()
+    print(f"[INFO] Ingest HTTP {r.status_code}, body {len(r.content)} bytes.", flush=True)
+    if r.status_code >= 400:
+        print(f"[ERROR] Ingest HTTP {r.status_code} "
+              f"Body[:500]={r.text[:500]!r}", flush=True)
+        r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        print(f"[ERROR] Ingest trả về không phải JSON. Status={r.status_code} "
+              f"Content-Type={r.headers.get('Content-Type')} "
+              f"Body[:500]={r.text[:500]!r}", flush=True)
+        raise
 
 
 def main() -> int:
