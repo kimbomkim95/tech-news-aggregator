@@ -20,7 +20,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import feedparser
@@ -48,8 +48,8 @@ RSS_SOURCES = [
     {"name": "The Verge", "lang": "en", "feed": "https://www.theverge.com/rss/index.xml", "category": "general"},
     {"name": "Ars Technica", "lang": "en", "feed": "https://feeds.arstechnica.com/arstechnica/index", "category": "general"},
     {"name": "Habr", "lang": "ru", "feed": "https://habr.com/ru/rss/all/all/?fl=ru", "category": "general"},
-    {"name": "36Kr", "lang": "zh", "feed": "https://36kr.com/feed", "category": "general"},
-    {"name": "Huxiu", "lang": "zh", "feed": "https://www.huxiu.com/rss/0.xml", "category": "general"},
+    {"name": "TMTPost", "lang": "zh", "feed": "https://www.tmtpost.com/feed", "category": "general"},
+    {"name": "InfoQ 中国", "lang": "zh", "feed": "https://www.infoq.cn/feed", "category": "general", "pub_offset_hours": -8},
     {"name": "V2EX", "lang": "zh", "feed": "https://v2ex.com/index.xml", "category": "tools"},
     {"name": "SSPAI", "lang": "zh", "feed": "https://sspai.com/feed", "category": "tools"},
     {"name": "OpenAI News", "lang": "en", "feed": "https://openai.com/news/rss.xml", "category": "ai"},
@@ -148,7 +148,11 @@ def fetch_rss(source: dict, limit: int):
         pub = None
         for key in ("published_parsed", "updated_parsed"):
             if getattr(e, key, None):
-                pub = datetime(*getattr(e, key)[:6], tzinfo=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                dt = datetime(*getattr(e, key)[:6], tzinfo=timezone.utc)
+                # InfoQ ghi nhãn GMT nhưng giờ thực chất là giờ Bắc Kinh
+                # (UTC+8) nên phải trừ 8h mới ra giờ UTC thật.
+                dt += timedelta(hours=source.get("pub_offset_hours", 0))
+                pub = dt.strftime("%Y-%m-%d %H:%M:%S")
                 break
         cat = classify(title, summary, source["category"])
         is_vip = 1 if (source["name"] in VIP_SOURCES and VIP_KEYWORDS.search(title)) else 0
